@@ -18,6 +18,7 @@ import importlib.resources
 import logging
 import os
 import shutil
+import warnings
 from collections import Counter
 from pathlib import Path
 from typing import List, Optional
@@ -96,7 +97,10 @@ def run_merge(
             tokenizer = value.tokenizer
 
     if tokenizer:
-        _update_config_vocab(cfg_out, tokenizer)
+        pad_to_multiple_of = None
+        if merge_config.tokenizer and merge_config.tokenizer.pad_to_multiple_of:
+            pad_to_multiple_of = merge_config.tokenizer.pad_to_multiple_of
+        _update_config_vocab(cfg_out, tokenizer, pad_to_multiple_of=pad_to_multiple_of)
 
     logging.info("Saving config")
     cfg_out.save_pretrained(out_path)
@@ -261,9 +265,13 @@ def _model_out_config(
 def _update_config_vocab(
     config: transformers.PretrainedConfig,
     tokenizer: transformers.PreTrainedTokenizerBase,
+    pad_to_multiple_of: Optional[int] = None,
 ):
+    vocab_size = len(tokenizer.get_vocab())
+    if pad_to_multiple_of and vocab_size % pad_to_multiple_of:
+        vocab_size = vocab_size + pad_to_multiple_of - (vocab_size % pad_to_multiple_of)
     try:
-        config.vocab_size = len(tokenizer.get_vocab())
+        config.vocab_size = vocab_size
     except Exception as e:
         logging.warning(
             "Unable to set vocabulary size in output config - you may need to manually correct it.",
@@ -284,17 +292,19 @@ def _load_arch_info(
         for m in merge_config.referenced_models()
     ]
 
-    if not any(a is False for a in model_arch_info):
+    if all(a is not None for a in model_arch_info):
         if not options.allow_crimes and not all(
             a == model_arch_info[0] for a in model_arch_info[1:]
         ):
             raise RuntimeError(
                 "Must specify --allow-crimes to attempt to mix different architectures"
             )
+        return model_arch_info[0]
     else:
+        warnings.warn("Attempting Automatic Merge.")
         model_arch_info = ArchitectureInfoUtils.infer_architecture_info(merge_config)
 
-    return model_arch_info[0]
+    return model_arch_info
 
 
 __all__ = ["MergeOptions", "run_merge"]

@@ -25,9 +25,9 @@ import transformers
 from typing_extensions import TypeAlias
 
 from mergekit.architecture import (
+    ArchitectureInfoUtils,
     ConfiguredArchitectureInfo,
     WeightInfo,
-    get_architecture_info,
 )
 from mergekit.common import ModelReference
 from mergekit.io import TensorWriter
@@ -147,26 +147,42 @@ def main(
     )
 
     if lm_head_info:
-        old_lm_head = cache.get(model).get_tensor(
-            lm_head_info.name, aliases=lm_head_info.aliases, device=device
-        )
-        donor_lm_head = cache.get(donor).get_tensor(
-            donor_lm_head_info.name, aliases=donor_lm_head_info.aliases, device=device
-        )
+        try:
+            old_lm_head = cache.get(model).get_tensor(
+                lm_head_info.name, aliases=lm_head_info.aliases, device=device
+            )
+        except KeyError:
+            if lm_head_info.optional:
+                logging.info(f"LM head tensor {lm_head_info.name} not found, skipping")
+            else:
+                report_issue(
+                    f"Could not load LM head tensor {lm_head_info.name}",
+                    error=True,
+                )
+            old_lm_head = None
 
-        LOG.info("Computing new lm_head embeddings")
-        new_lm_head = get_embeddings(
-            old_lm_head,
-            donor_lm_head,
-            old_vocab,
-            new_vocab,
-            common_tokens,
-            accept_prefix=True,
-            k=k,
-            barycentric=barycentric,
-            cosine_similarity=cosine_similarity,
-            name=lm_head_info.name,
-        )
+        if old_lm_head is not None:
+            donor_lm_head = cache.get(donor).get_tensor(
+                donor_lm_head_info.name,
+                aliases=donor_lm_head_info.aliases,
+                device=device,
+            )
+
+            LOG.info("Computing new lm_head embeddings")
+            new_lm_head = get_embeddings(
+                old_lm_head,
+                donor_lm_head,
+                old_vocab,
+                new_vocab,
+                common_tokens,
+                accept_prefix=True,
+                k=k,
+                barycentric=barycentric,
+                cosine_similarity=cosine_similarity,
+                name=lm_head_info.name,
+            )
+        else:
+            new_lm_head = None
 
     # Save out the new model
     LOG.info(f"Saving new model to {out_path}")
@@ -184,13 +200,17 @@ def main(
             tensor = cache.get(model).get_tensor(
                 weight_info.name, aliases=weight_info.aliases
             )
+        if tensor is None:
+            if weight_info.optional:
+                continue
+            report_issue(f"Could not load weight tensor {weight_info.name}", error=True)
         writer.save_tensor(weight_info.name, tensor, clone=merge_options.clone_tensors)
     writer.finalize()
 
     tokenizer.save_pretrained(out_path)
     cfg_out = arch_info.config
     try:
-        cfg_out.vocab_size = tokenizer.vocab_size
+        cfg_out.vocab_size = new_embed.shape[0]
     except AttributeError:
         LOG.error(
             "Could not set vocab size in config.json - you may need to update it manually."
@@ -261,7 +281,7 @@ def get_embedding_info(
 ) -> Tuple[WeightInfo, WeightInfo]:
     """Get WeightInfo for the input and output embeddings of a model."""
     cfg = model.config(trust_remote_code=options.trust_remote_code)
-    arch_info = get_architecture_info(cfg)
+    arch_info = ArchitectureInfoUtils.get_architecture_info(cfg)
 
     embed, lm_head = None, None
     for weight_info in arch_info.pre_weights(cfg):
@@ -576,8 +596,8 @@ def validate_architecture(
     """
     model_cfg = model.config(trust_remote_code=options.trust_remote_code)
     donor_cfg = donor.config(trust_remote_code=options.trust_remote_code)
-    model_arch_info = get_architecture_info(model_cfg)
-    donor_arch_info = get_architecture_info(donor_cfg)
+    model_arch_info = ArchitectureInfoUtils.get_architecture_info(model_cfg)
+    donor_arch_info = ArchitectureInfoUtils.get_architecture_info(donor_cfg)
     if donor_arch_info != model_arch_info:
         report_issue(
             f"Model architectures do not match: {model_arch_info.name()} vs {donor_arch_info.name()}",
