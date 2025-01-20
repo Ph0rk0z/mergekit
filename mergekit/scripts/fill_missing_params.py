@@ -7,13 +7,15 @@ import torch
 from safetensors import safe_open
 from tqdm import tqdm
 
-from mergekit.architecture import (
-    _get_model_parameter_names,
-    _resolve_model_directory,
-    find_common_ordered_names,
-    find_prefix_and_check_sublist,
-    strip_prefix,
-)
+from mergekit.architecture import ParameterNamesUtils
+
+#from mergekit.architecture import (
+#    _get_model_parameter_names,
+#    _resolve_model_directory,
+#    find_common_ordered_names,
+#    find_prefix_and_check_sublist,
+#    strip_prefix,
+#)
 from mergekit.io.lazy_tensor_loader import ShardedTensorIndex
 from mergekit.io.tensor_writer import TensorWriter
 
@@ -108,7 +110,7 @@ def copy_and_fill_missing_params(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Resolve the model directory for the base model
-    base_dir = _resolve_model_directory(base_model_repo_id)
+    base_dir = ParameterNamesUtils.resolve_model_directory(base_model_repo_id)
     files_to_copy = [
         item
         for item in base_dir.rglob("*")
@@ -126,8 +128,8 @@ def copy_and_fill_missing_params(
             pbar.update(1)
 
     # Retrieve parameter names from both models
-    base_param_names = _get_model_parameter_names(base_model_repo_id)
-    submodel_param_names = _get_model_parameter_names(sub_model_dir)
+    base_param_names = ParameterNamesUtils.get_model_parameter_names(base_model_repo_id)
+    submodel_param_names = ParameterNamesUtils.get_model_parameter_names(sub_model_dir)
 
     # Ensure the base model has more parameters than the submodel
     assert len(base_param_names) > len(submodel_param_names), (
@@ -136,15 +138,15 @@ def copy_and_fill_missing_params(
     )
 
     # Determine parameter prefix and find common names
-    prefix = find_prefix_and_check_sublist(base_param_names, submodel_param_names)
-    common_param_names = find_common_ordered_names(
+    prefix = ParameterNamesUtils.find_prefix(base_param_names, submodel_param_names)
+    common_param_names = ParameterNamesUtils.find_common_ordered_names(
         [base_param_names, submodel_param_names], ["", prefix]
     )
 
     # Load parameter indices for tensor storage
     base_index = ShardedTensorIndex.from_disk(str(base_dir))
     submodel_index = ShardedTensorIndex.from_disk(
-        str(_resolve_model_directory(sub_model_dir))
+        str(ParameterNamesUtils.resolve_model_directory(sub_model_dir))
     )
 
     # Initialize the tensor writer
@@ -163,7 +165,7 @@ def copy_and_fill_missing_params(
 
         # Check if the parameter is common to both models
         if name in common_param_names:
-            submodel_name = strip_prefix(name, prefix)
+            submodel_name = ParameterNamesUtils.strip_prefix(name, prefix)
             submodel_tensor = load_tensor_from_index(submodel_name, submodel_index)
 
             # Log size mismatches
